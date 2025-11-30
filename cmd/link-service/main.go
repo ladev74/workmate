@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -15,11 +16,13 @@ import (
 	"link-service/internal/logger"
 	filesystem "link-service/internal/repository/file_system"
 	"link-service/internal/server"
+	"link-service/internal/service"
 )
 
 // TODO: rename repo
 // TODO: create logger interface
 // TODO: flag -race
+// TODO: упомянуть что, sleep это специальная мера, а не костыль
 
 func main() {
 	ctx, cancel := signal.NotifyContext(
@@ -53,26 +56,26 @@ func main() {
 		return
 	}
 
-	srv := server.New(ctx, &cfg.Logger, &cfg.HTTPServer, log, storage)
+	// TODO: set a timeout in the config
+	srv := service.New(storage, 30*time.Second, log)
+	err = srv.ProcessTempRecords()
+	if err != nil {
+		log.Fatal("failed to process temp records: %v", zap.Error(err))
+	}
+
+	serv := server.New(ctx, srv, &cfg.Logger, &cfg.HTTPServer, log, storage)
 
 	go func() {
-		log.Info("starting http server", zap.String("addr", srv.Addr))
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Info("starting http server", zap.String("addr", serv.Addr))
+		if err := serv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("failed to start server", zap.Error(err))
 		}
 	}()
 
 	<-ctx.Done()
-
-	//shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.HTTPServer.ShutdownTimeout)
-	//defer shutdownCancel()
-
 	log.Info("received shutdown signal")
 
-	//err = srv.Shutdown(shutdownCtx)
-	//if err != nil {
-	//	log.Error("failed to shutdown server", zap.Error(err))
-	//}
+	time.Sleep(cfg.HTTPServer.ShutdownTimeout)
 
 	log.Info("application shutdown completed successfully")
 }

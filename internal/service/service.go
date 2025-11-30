@@ -15,6 +15,8 @@ import (
 	"link-service/internal/repository"
 )
 
+// TODO: process temp file
+
 const (
 	statusAvailable    = "available"
 	statusNotAvailable = "not available"
@@ -101,6 +103,46 @@ func (s *Service) Process(serverCtx context.Context, requestCtx context.Context,
 
 	s.logger.Info("success process record")
 	return rec, nil
+}
+
+func (s *Service) ProcessTempRecords() error {
+	records, err := s.repository.LoadTempRecords()
+	if err != nil {
+		s.logger.Error("failed to load temp records", zap.Error(err))
+		return fmt.Errorf("failed to load temp records: %w", err)
+	}
+
+	for _, tempRec := range records {
+		s.incCounter()
+		rec := &domain.Record{
+			ID:    s.counter,
+			Links: make(map[string]string),
+		}
+
+		for link := range tempRec.Links {
+			statusCode, err := s.ping(link)
+			if err != nil || statusCode != http.StatusOK {
+				rec.Links[link] = statusNotAvailable
+			} else {
+				rec.Links[link] = statusAvailable
+			}
+		}
+
+		err = s.repository.SaveRecord(rec)
+		if err != nil {
+			s.logger.Error("failed to save processed temp record", zap.Int64("id", rec.ID), zap.Error(err))
+			continue
+		}
+	}
+
+	err = s.repository.ClearTempFile()
+	if err != nil {
+		s.logger.Error("failed to clear temp file", zap.Error(err))
+		return fmt.Errorf("failed to clear temp file: %w", err)
+	}
+
+	s.logger.Info("successfully processed temp records")
+	return nil
 }
 
 func (s *Service) ping(link string) (int, error) {

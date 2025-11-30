@@ -2,7 +2,9 @@ package filesystem
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -124,6 +126,91 @@ func (s *Storage) SaveTempRecord(record *domain.Record) error {
 	return nil
 }
 
+func (s *Storage) LoadTempRecords() ([]domain.Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tempFile, err := os.Open(s.tempPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open temp file: %w", err)
+	}
+	defer tempFile.Close()
+
+	var records []domain.Record
+	decoder := json.NewDecoder(tempFile)
+
+	for {
+		var rec domain.Record
+		err = decoder.Decode(&rec)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			return nil, fmt.Errorf("failed to decode temp record: %w", err)
+		}
+
+		records = append(records, rec)
+	}
+
+	return records, nil
+}
+
+func (s *Storage) ClearTempFile() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	err := os.WriteFile(s.tempPath, []byte{}, 0644)
+
+	return err
+}
+
 func (s *Storage) LoadLastLinksNum() int64 {
-	return 0
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	file, err := os.Open(s.path)
+	if err != nil {
+		s.logger.Error("failed to open file", zap.String("path", s.path), zap.Error(err))
+		return 0
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		s.logger.Error("failed to stat file", zap.Error(err))
+		return 0
+	}
+
+	if stat.Size() == 0 {
+		return 0
+	}
+
+	buf := make([]byte, 1)
+	var lastLine []byte
+	pos := stat.Size() - 1
+
+	for pos >= 0 {
+		_, err = file.ReadAt(buf, pos)
+		if err != nil {
+			s.logger.Error("failed to read file", zap.Error(err))
+			return 0
+		}
+
+		if buf[0] == '\n' && pos != stat.Size()-1 {
+			break
+		}
+
+		lastLine = append([]byte{buf[0]}, lastLine...)
+		pos--
+	}
+
+	var rec domain.Record
+	err = json.Unmarshal(lastLine, &rec)
+	if err != nil {
+		s.logger.Error("failed to unmarshal last record", zap.Error(err))
+		return 0
+	}
+
+	return rec.ID
 }

@@ -23,7 +23,7 @@ type Config struct {
 	ShutdownTimeout time.Duration `env:"HTTP_SHUTDOWN_TIMEOUT" env-required:"true"`
 }
 
-func New(ctx context.Context, cfgLogger *logger.Config, cfgServer *Config, log *zap.Logger, repo repository.Repository) http.Server {
+func New(ctx context.Context, srv *service.Service, cfgLogger *logger.Config, cfgServer *Config, log *zap.Logger, repo repository.Repository) http.Server {
 	addr := fmt.Sprintf("%s:%d", cfgServer.Host, cfgServer.Port)
 
 	router := chi.NewRouter()
@@ -33,9 +33,6 @@ func New(ctx context.Context, cfgLogger *logger.Config, cfgServer *Config, log *
 	router.Use(logger.MiddlewareLogger(log, cfgLogger))
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.URLFormat)
-
-	// TODO: set a timeout in the config
-	srv := service.New(repo, 30*time.Second, log)
 
 	router.Post("/links", handler.ProcessLinks(ctx, srv, cfgServer.Timeout, log))
 
