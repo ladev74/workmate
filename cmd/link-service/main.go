@@ -19,10 +19,6 @@ import (
 	"link-service/internal/service"
 )
 
-// TODO: rename repo
-// TODO: упомянуть что, sleep это специальная мера, а не костыль
-// TODO: упомянуть про 2 контекста и почему я так решил сделать
-
 func main() {
 	ctx, cancel := signal.NotifyContext(
 		context.Background(),

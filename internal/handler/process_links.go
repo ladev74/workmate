@@ -57,17 +57,3 @@ func writeResponse(w http.ResponseWriter, rec *domain.Record, logger *zap.Logger
 
 	return err
 }
-
-//pdf := gofpdf.New("P", "mm", "A4", "")
-//pdf.AddPage()
-//pdf.SetFont("Arial", "", 14)
-//
-//for _, recID := range ids {
-//rec := storage.Get(recID)
-//for link, status := range rec.Results {
-//pdf.Cell(0, 10, fmt.Sprintf("%s: %s", link, status))
-//pdf.Ln(10)
-//}
-//}
-//
-//pdf.Output(w)
