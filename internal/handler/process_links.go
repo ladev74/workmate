@@ -3,11 +3,13 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
 	"go.uber.org/zap"
 
+	"link-service/internal/domain"
 	"link-service/internal/service"
 )
 
@@ -15,12 +17,10 @@ type processLinksRequest struct {
 	Links []string `json:"links"`
 }
 
-func ProcessLinks(srv *service.Service, requestTimeout time.Duration, logger *zap.Logger) http.HandlerFunc {
+func ProcessLinks(serverCtx context.Context, srv *service.Service, requestTimeout time.Duration, logger *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
+		requestCtx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 		defer cancel()
-
-		_ = ctx
 
 		var reqLinks processLinksRequest
 		err := json.NewDecoder(r.Body).Decode(&reqLinks)
@@ -30,17 +30,36 @@ func ProcessLinks(srv *service.Service, requestTimeout time.Duration, logger *za
 			return
 		}
 
-		err = srv.Process(reqLinks.Links)
+		rec, err := srv.Process(serverCtx, requestCtx, reqLinks.Links)
 		if err != nil {
+			if errors.Is(err, service.ErrAppStopped) {
+				err = writeResponse(w, rec, logger)
+				return
+			}
+
 			http.Error(w, "failed to process links", http.StatusInternalServerError)
-			logger.Error("ProcessLinks: failed to processing links", zap.Error(err))
+			logger.Error("ProcessLinks: failed to process links", zap.Error(err))
 			return
 		}
 
-		logger.Info("ProcessLinks: successfully process links")
-		// TODO: write success response
+		err = writeResponse(w, rec, logger)
 	}
 }
+
+func writeResponse(w http.ResponseWriter, rec *domain.Record, logger *zap.Logger) error {
+	w.WriteHeader(http.StatusCreated)
+	w.Header().Set("Content-Type", "application/json")
+
+	err := json.NewEncoder(w).Encode(rec)
+	if err != nil {
+		logger.Warn("ProcessLinks: failed to encode response", zap.Error(err))
+	}
+
+	return err
+}
+
+// TODO: добавить статус unknown, когда сервер остановлен, но получил запрос, указать это в README
+// TODO: упомянуть про 2 контекста и почему я так решил сделать
 
 //pdf := gofpdf.New("P", "mm", "A4", "")
 //pdf.AddPage()

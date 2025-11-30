@@ -1,9 +1,12 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
-	"sync"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -13,78 +16,115 @@ import (
 )
 
 const (
-	StatusAvailable    = "available"
-	StatusNotAvailable = "not available"
+	statusAvailable    = "available"
+	statusNotAvailable = "not available"
+	statusUnknown      = "unknown"
+
+	httpsPrefix = "https://"
+	httpPrefix  = "http://"
+)
+
+var (
+	ErrAppStopped = errors.New("application is stopped")
 )
 
 type Service struct {
+	counter     int64
 	repository  repository.Repository
-	mu          *sync.Mutex
-	counter     int
+	httpClient  *http.Client
 	pingTimeout time.Duration
 	logger      *zap.Logger
 }
 
-// TODO: counter logic
-
 func New(repo repository.Repository, pingTimeout time.Duration, logger *zap.Logger) *Service {
+	lastLinksNum := repo.LoadLastLinksNum()
+
 	return &Service{
 		repository:  repo,
-		mu:          &sync.Mutex{},
-		counter:     0,
+		counter:     lastLinksNum,
+		httpClient:  &http.Client{Timeout: pingTimeout},
 		pingTimeout: pingTimeout,
 		logger:      logger,
 	}
 }
 
-func (s *Service) Process(links []string) error {
-	client := http.Client{
-		Timeout: s.pingTimeout,
-	}
-
+func (s *Service) Process(serverCtx context.Context, requestCtx context.Context, links []string) (*domain.Record, error) {
+	s.incCounter()
 	rec := &domain.Record{
 		Links: make(map[string]string),
-		ID:    0,
+		ID:    s.counter,
+	}
+
+	select {
+	case <-serverCtx.Done():
+		for _, link := range links {
+			rec.Links[link] = statusUnknown
+		}
+
+		err := s.repository.SaveTempRecord(rec)
+		if err != nil {
+			s.decCounter()
+			s.logger.Error("failed to save temp record", zap.Error(err))
+			return nil, fmt.Errorf("failed to save temp record: %w", err)
+		}
+
+		return rec, ErrAppStopped
+
+	default:
 	}
 
 	for _, link := range links {
-		// TODO: const
-		resp, err := client.Head("https://" + link)
-		if err != nil {
-			s.logger.Error("failed to ping link", zap.String("link", link), zap.Error(err))
-			return fmt.Errorf("failed to ping link: %s: %w", link, err)
+		select {
+		case <-requestCtx.Done():
+			s.decCounter()
+			s.logger.Info(requestCtx.Err().Error(), zap.String("link", link))
+			return nil, requestCtx.Err()
+
+		default:
 		}
 
-		if resp.StatusCode == http.StatusOK {
-			rec.Links[link] = StatusAvailable
+		statusCode, err := s.ping(link)
+		if err != nil || statusCode != http.StatusOK {
+			s.logger.Warn("failed to ping link", zap.String("link", link), zap.Error(err))
+			rec.Links[link] = statusNotAvailable
 		} else {
-			rec.Links[link] = StatusNotAvailable
+			rec.Links[link] = statusAvailable
 		}
 	}
-
-	s.incCounter()
-	rec.ID = s.counter
 
 	err := s.repository.SaveRecord(rec)
 	if err != nil {
 		s.decCounter()
-
 		s.logger.Error("failed to save record", zap.Error(err))
-		return fmt.Errorf("failed to save record: %w", err)
+		return nil, fmt.Errorf("failed to save record: %w", err)
 	}
 
-	fmt.Println(rec)
-	return nil
+	s.logger.Info("success process record")
+	return rec, nil
+}
+
+func (s *Service) ping(link string) (int, error) {
+	if !strings.HasPrefix(link, httpPrefix) && !strings.HasPrefix(link, httpsPrefix) {
+		link = httpsPrefix + link
+	}
+
+	resp, err := s.httpClient.Head(link)
+	if err == nil {
+		return resp.StatusCode, nil
+	}
+
+	resp, err = s.httpClient.Get(link)
+	if err != nil {
+		return 0, fmt.Errorf("failed to ping link: %w", err)
+	}
+
+	return resp.StatusCode, nil
 }
 
 func (s *Service) incCounter() {
-	s.mu.Lock()
-	s.counter++
-	s.mu.Unlock()
+	atomic.AddInt64(&s.counter, 1)
 }
 
 func (s *Service) decCounter() {
-	s.mu.Lock()
-	s.counter--
-	s.mu.Unlock()
+	atomic.AddInt64(&s.counter, -1)
 }
